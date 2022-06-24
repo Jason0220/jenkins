@@ -13,6 +13,11 @@ pipeline {
         }
         stage('BUILD') {
             steps {
+                dir ('target/da1470x_bootloader1') {
+                    sh 'sed -i \'s#e:/7-2018-q2/bin#/var/lib/jenkins/tools/gcc-arm-none-eabi-7-2018-q2-update/bin#\' rtconfig.py'
+                    sh 'scons -c'
+                    sh 'scons -j16'
+                }
                 dir ('target/da1470x') {
                     sh 'sed -i \'s#E:\\\\DiaSemi\\\\SmartSnippetsStudio2.0.16\\\\GCC\\\\7-2018-q2\\\\bin#\\/var\\/lib\\/jenkins\\/tools\\/gcc-arm-none-eabi-7-2018-q2-update\\/bin#\' rtconfig.py'
                     sh 'scons -c'
