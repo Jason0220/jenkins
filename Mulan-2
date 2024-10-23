@@ -1,3 +1,5 @@
+import groovy.json.JsonOutput
+
 pipeline {
     agent any
 
@@ -13,37 +15,59 @@ pipeline {
                 retry(20)
             }
             steps {
-//              checkout([$class: 'GitSCM', branches: [[name: '**']], extensions: [], userRemoteConfigs: [[credentialsId: 'jenkins_13', url: 'ssh://10.10.192.13:29418/Comma']]])
-                checkout([$class: 'GitSCM', branches: [[name: '$GERRIT_REFSPEC']], extensions: [], userRemoteConfigs: [[credentialsId: 'jenkins_13', refspec: 'refs/changes/*:refs/changes/*', url: 'ssh://10.10.192.13:29418/Mulan-BES2800BP']]])
+                checkout scmGit(branches: [[name: '$GERRIT_REFSPEC']], 
+                    extensions: [], 
+                    userRemoteConfigs: [[credentialsId: 'jenkins_13', 
+                        name: 'Mulan-BES2800BP', 
+                        refspec: 'refs/changes/*:refs/changes/*', 
+                        url: 'ssh://10.10.192.13:29418/Mulan-BES2800BP']])
             }
         }
-        
-        stage('BUILD') {
+
+        stage('BUILD_bth') {
             steps {
-//              sh 'cp -r ~/tools/gcc-arm-none-eabi-10-2020-q4-major-linux tools/gcc'
-                dir ('target/bes2800_evb') {
-//              sh 'sed -i \'s#../../tools/gcc/gcc-arm-none-eabi-10-2020-q4-major/bin#/home/data0/jenkins/tools/gcc-arm-none-eabi-10-2020-q4-major-linux/bin#\' rtconfig.py'
-                sh 'scons -c'
-                sh 'build-wrapper-linux-x86-64 --out-dir ../../bw-output scons -j64'
+                dir ('target/bes2800_bth') {
+                    sh 'scons -c'
+                    sh 'git clean -fxd'
+                    sh 'build-wrapper-linux-x86-64 --out-dir ../../bw-output_bth scons -j64'
                 }
             }
-            
-        
         }
-        
-        stage('SCAN') {
+
+        stage('SCAN_bth') {
             steps {
                 withSonarQubeEnv('SonarQube_46') {
-                    sh 'rm -rf sonar-project.properties'
                     sh 'touch sonar-project.properties'
-                    sh 'echo "sonar.projectKey=Mulan 2" >> sonar-project.properties'
-                    sh 'echo "sonar.exclusions=platform/**/*,third_party/**/*,tools/**/*,**/*.css,**/*.js,**/*.html,**/*.xml,**/*.py,**/*.php,**/*.yaml" >> sonar-project.properties'
-                    sh 'sonar-scanner -Dsonar.projectKey=Mulan-2   -Dsonar.sources=.   -Dsonar.cfamily.build-wrapper-output=./bw-output   -Dsonar.host.url=http://10.10.192.46:9000/sonarqube   -Dsonar.login=sqp_1ee81565f1470d2a71db87c2a3d3f46cedcfae05'
+                    sh 'echo "sonar.projectKey=Mulan-2" >> sonar-project.properties'
+                    sh 'echo "sonar.exclusions=framework/ota/component/diff_algo/**/*, \
+                            framework/ota/component/check/algo/**/*, \
+                            framework/ota/component/ota_zip/**/*, \
+                            framework/ota/tools/**/*, \
+                            drivers/speaker/**/*, \
+                            platform/**/*, \
+                            **/third_party/**/*, \
+                            **/tools/**/*, \
+                            **/*.css, \
+                            **/*.js, \
+                            **/*.html, \
+                            **/*.xml, \
+                            **/*.py, \
+                            **/*.php, \
+                            **/*.yaml, \
+                            framework/ui/uikit/**/*, \
+                            app/ui/uikit/mulan/font/generated/**/*, \
+                            app/ui/uikit/mulan/common/**/*, \
+                            app/ui/common/**/*" >> sonar-project.properties'
+                    sh 'sonar-scanner -Dsonar.projectKey=Mulan-2   \
+                    -Dsonar.sources=.   \
+                    -Dsonar.cfamily.build-wrapper-output=./bw-output_bth   \
+                    -Dsonar.host.url=http://10.10.192.46:9000/sonarqube   \
+                    -Dsonar.login=sqp_1ee81565f1470d2a71db87c2a3d3f46cedcfae05'
                 }
             }
         }
         
-        stage("Quality Gate") {
+        stage("Quality Gate_bth") {
             steps {
                 script {
                     timeout(20) {
@@ -53,6 +77,77 @@ pipeline {
                         }
                     }
                 }
+            }
+        }
+        
+        stage('BUILD_evb') {
+            steps {
+                dir ('target/bes2800_evb') {
+                sh 'scons -c'
+                sh 'git clean -fxd'
+                sh 'build-wrapper-linux-x86-64 --out-dir ../../bw-output_evb scons -j64'
+                }
+            }
+        }
+        
+        stage('SCAN_evb') {
+            steps {
+                withSonarQubeEnv('SonarQube_46') {
+                   sh 'sonar-scanner \
+                        -Dsonar.projectKey=Mulan-2_evb \
+                        -Dsonar.sources=. \
+                        -Dsonar.cfamily.build-wrapper-output=bw-output_evb \
+                        -Dsonar.host.url=http://10.10.192.46:9000/sonarqube \
+                        -Dsonar.login=sqp_68fd961614279e058065ae03d33e04896d5c30b9'
+                }
+            }
+        }
+        
+        stage("Quality Gate_evb") {
+            steps {
+                script {
+                    timeout(20) {
+                        def qg = waitForQualityGate('SonarQube_46')
+                        if (qg.status != 'OK') {
+                            error "Code scan failed! failure: ${qg.status}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('CLEAN') {
+            steps {
+                    sh 'rm -rf *'
+            }
+        }
+    }
+    
+    post {
+        always {  // 无论构建成功或失败都执行
+            script {
+                def consoleLog = currentBuild.rawBuild.getLog(100) // 获取全部日志
+
+                // Gerrit 相关信息
+                def gerritServer = "http://10.10.192.13:8082/gerrit"  // Gerrit 服务器地址
+                def changeId = env.GERRIT_CHANGE_NUMBER             // Gerrit Change ID
+                def revisionId = env.GERRIT_PATCHSET_NUMBER         // Gerrit Patchset (Revision) ID
+                def gerritUser = "jenkins"                    // Gerrit 用户名
+                def gerritPassword = "L4Yjc6ypq0kLEhdJ9dl/1wUCgC2dWv9WI7Br2mIUdw"                // Gerrit 用户密码
+
+                // 格式化日志为代码块并加入换行符
+                def formattedLog = "```\n" + consoleLog.join("\n") + "\n```"
+
+                // 创建要发送的 JSON 数据
+                def jsonData = JsonOutput.toJson([message: "Jenkins Console Log:\n${formattedLog}"])
+
+                // 使用 curl 通过 Gerrit REST API 发送评论
+                sh """
+                curl -X POST --data '${jsonData}' \\
+                     -H 'Content-Type: application/json' \\
+                     --user '${gerritUser}:${gerritPassword}' \\
+                     "${gerritServer}/a/changes/${changeId}/revisions/${revisionId}/review"
+                """
             }
         }
     }
